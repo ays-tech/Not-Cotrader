@@ -242,8 +242,10 @@ def main() -> None:
         app.add_handler(feedback_conv_handler)
         app.add_handler(start_callback_handler)
         app.add_handler(wallet_handler)
+        app.add_handler(settings_input_handler)
         for callback in wallet_callbacks:
             app.add_handler(callback)
+            
         app.add_handler(buy_conv_handler)
         app.add_handler(sell_conv_handler)
         app.add_handler(watchlist_handler)

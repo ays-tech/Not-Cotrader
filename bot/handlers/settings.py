@@ -4,27 +4,33 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes, Mes
 
 logger = logging.getLogger(__name__)
 
-# Default chain-specific settings (removed slippage)
+# Default chain-specific settings
 DEFAULT_TON_SETTINGS = {
-    "gas_fee": "medium",  # low, medium, high
-    "notifications": True,
-    "wallet_format": "user_friendly",
-    "currency": "USD"
+    "buy_settings": {
+        "presets": [1, 4, 5, 10],  # in TON
+        "slippage": 1  # in percentage (single value)
+    },
+    "sell_settings": {
+        "percentages": [25, 50, 70, 100],  # in percentage
+        "slippage": 1  # in percentage (single value)
+    }
 }
 
 DEFAULT_SOLANA_SETTINGS = {
-    "gas_fee": "medium",
-    "notifications": True,
-    "wallet_format": "user_friendly",
-    "currency": "USD"
+    "buy_settings": {
+        "presets": [0.1, 0.5, 1, 1.5],  # in SOL
+        "slippage": 1  # in percentage (single value)
+    },
+    "sell_settings": {
+        "percentages": [25, 50, 70, 100],  # in percentage
+        "slippage": 1  # in percentage (single value)
+    }
 }
-
 
 async def settings_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prompt user to choose which chain's settings to edit."""
     user_id = str(update.effective_user.id)
 
-    # Initialize user settings if they don't exist
     if "settings" not in context.user_data:
         context.user_data["settings"] = {
             "ton": DEFAULT_TON_SETTINGS.copy(),
@@ -51,15 +57,20 @@ async def settings_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     logger.info(f"Prompted user {user_id} to choose settings chain")
 
-
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle settings menu interactions."""
     query = update.callback_query
     await query.answer()
     user_id = str(update.effective_user.id)
+
+    # Initialize settings if not present
+    if "settings" not in context.user_data:
+        context.user_data["settings"] = {
+            "ton": DEFAULT_TON_SETTINGS.copy(),
+            "solana": DEFAULT_SOLANA_SETTINGS.copy()
+        }
     settings = context.user_data["settings"]
 
-    # Extract data and current chain
     data = query.data
     chain = context.user_data.get("current_chain")
 
@@ -69,37 +80,37 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await show_chain_settings_menu(query, context, chain)
         logger.info(f"User {user_id} selected {chain} settings")
 
-    elif data == "set_gas_fee":
-        await show_gas_fee_menu(query, chain)
+    elif data == "set_buy_settings":
+        await show_buy_settings_menu(query, context, chain)
 
-    elif data.startswith("gas_"):
-        gas_fee = data.split("_")[1]
-        settings[chain]["gas_fee"] = gas_fee
-        await show_chain_settings_menu(query, context, chain)
-        logger.info(f"User {user_id} set {chain} gas fee to {gas_fee}")
+    elif data == "set_sell_settings":
+        await show_sell_settings_menu(query, context, chain)
 
-    elif data == "toggle_notifications":
-        settings[chain]["notifications"] = not settings[chain]["notifications"]
-        await show_chain_settings_menu(query, context, chain)
-        logger.info(f"User {user_id} toggled {chain} notifications to {settings[chain]['notifications']}")
+    elif data.startswith("edit_buy_preset_"):
+        preset_index = int(data.split("_")[3])
+        context.user_data["editing_buy_preset_index"] = preset_index
+        await query.edit_message_text(
+            f"Enter new buy preset value for {chain.upper()} (current: {settings[chain]['buy_settings']['presets'][preset_index]}):"
+        )
 
-    elif data == "set_wallet_format":
-        await show_wallet_format_menu(query, chain)
+    elif data == "edit_buy_slippage":
+        context.user_data["editing_buy_slippage"] = True
+        await query.edit_message_text(
+            f"Enter new buy slippage value (%) for {chain.upper()} (current: {settings[chain]['buy_settings']['slippage']}):"
+        )
 
-    elif data.startswith("wallet_"):
-        format_type = "_".join(data.split("_")[1:])
-        settings[chain]["wallet_format"] = format_type
-        await show_chain_settings_menu(query, context, chain)
-        logger.info(f"User {user_id} set {chain} wallet format to {format_type}")
+    elif data.startswith("edit_sell_percent_"):
+        percent_index = int(data.split("_")[3])
+        context.user_data["editing_sell_percent_index"] = percent_index
+        await query.edit_message_text(
+            f"Enter new sell percentage value for {chain.upper()} (current: {settings[chain]['sell_settings']['percentages'][percent_index]}%):"
+        )
 
-    elif data == "set_currency":
-        await show_currency_menu(query, chain)
-
-    elif data.startswith("currency_"):
-        currency = data.split("_")[1]
-        settings[chain]["currency"] = currency
-        await show_chain_settings_menu(query, context, chain)
-        logger.info(f"User {user_id} set {chain} currency to {currency}")
+    elif data == "edit_sell_slippage":
+        context.user_data["editing_sell_slippage"] = True
+        await query.edit_message_text(
+            f"Enter new sell slippage value (%) for {chain.upper()} (current: {settings[chain]['sell_settings']['slippage']}):"
+        )
 
     elif data == "settings_done":
         await query.edit_message_text(
@@ -115,16 +126,80 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("Unknown option. Please try again.")
         logger.warning(f"User {user_id} selected unknown option: {data}")
 
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle text input for editing presets, percentages, and slippages."""
+    user_id = str(update.effective_user.id)
+    chain = context.user_data.get("current_chain")
+    if "settings" not in context.user_data:
+        context.user_data["settings"] = {
+            "ton": DEFAULT_TON_SETTINGS.copy(),
+            "solana": DEFAULT_SOLANA_SETTINGS.copy()
+        }
+    settings = context.user_data["settings"]
+
+    if "editing_buy_preset_index" in context.user_data:
+        try:
+            new_value = float(update.message.text)
+            preset_index = context.user_data["editing_buy_preset_index"]
+            settings[chain]["buy_settings"]["presets"][preset_index] = new_value
+            del context.user_data["editing_buy_preset_index"]
+            await update.message.reply_text(
+                f"⚙️ Adjust your {chain.upper()} buy settings:",
+                reply_markup=await show_buy_settings_menu(None, context, chain)
+            )
+            logger.info(f"User {user_id} updated {chain} buy preset {preset_index} to {new_value}")
+        except ValueError:
+            await update.message.reply_text("Please enter a valid number.")
+
+    elif "editing_buy_slippage" in context.user_data:
+        try:
+            new_value = float(update.message.text)
+            settings[chain]["buy_settings"]["slippage"] = new_value
+            del context.user_data["editing_buy_slippage"]
+            await update.message.reply_text(
+                f"⚙️ Adjust your {chain.upper()} buy settings:",
+                reply_markup=await show_buy_settings_menu(None, context, chain)
+            )
+            logger.info(f"User {user_id} updated {chain} buy slippage to {new_value}")
+        except ValueError:
+            await update.message.reply_text("Please enter a valid percentage.")
+
+    elif "editing_sell_percent_index" in context.user_data:
+        try:
+            new_value = float(update.message.text)
+            if 0 <= new_value <= 100:
+                percent_index = context.user_data["editing_sell_percent_index"]
+                settings[chain]["sell_settings"]["percentages"][percent_index] = new_value
+                del context.user_data["editing_sell_percent_index"]
+                await update.message.reply_text(
+                    f"⚙️ Adjust your {chain.upper()} sell settings:",
+                    reply_markup=await show_sell_settings_menu(None, context, chain)
+                )
+                logger.info(f"User {user_id} updated {chain} sell percentage {percent_index} to {new_value}")
+            else:
+                await update.message.reply_text("Please enter a percentage between 0 and 100.")
+        except ValueError:
+            await update.message.reply_text("Please enter a valid number.")
+
+    elif "editing_sell_slippage" in context.user_data:
+        try:
+            new_value = float(update.message.text)
+            settings[chain]["sell_settings"]["slippage"] = new_value
+            del context.user_data["editing_sell_slippage"]
+            await update.message.reply_text(
+                f"⚙️ Adjust your {chain.upper()} sell settings:",
+                reply_markup=await show_sell_settings_menu(None, context, chain)
+            )
+            logger.info(f"User {user_id} updated {chain} sell slippage to {new_value}")
+        except ValueError:
+            await update.message.reply_text("Please enter a valid percentage.")
 
 async def show_chain_settings_menu(query, context: ContextTypes.DEFAULT_TYPE, chain: str) -> None:
     """Display chain-specific settings menu."""
-    settings = context.user_data["settings"][chain]
     keyboard = [
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
-        [InlineKeyboardButton(f"Gas Fee: {settings['gas_fee'].capitalize()}", callback_data="set_gas_fee")],
-        [InlineKeyboardButton(f"Notifications: {'On' if settings['notifications'] else 'Off'}", callback_data="toggle_notifications")],
-        [InlineKeyboardButton(f"Wallet Format: {settings['wallet_format'].replace('_', ' ').capitalize()}", callback_data="set_wallet_format")],
-        [InlineKeyboardButton(f"Currency: {settings['currency']}", callback_data="set_currency")],
+        [InlineKeyboardButton("Buy Settings", callback_data="set_buy_settings")],
+        [InlineKeyboardButton("Sell Settings", callback_data="set_sell_settings")],
         [InlineKeyboardButton("Done", callback_data="settings_done")]
     ]
 
@@ -133,55 +208,69 @@ async def show_chain_settings_menu(query, context: ContextTypes.DEFAULT_TYPE, ch
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+async def show_buy_settings_menu(query, context: ContextTypes.DEFAULT_TYPE, chain: str) -> None:
+    """Show buy settings menu with presets and single slippage in single buttons."""
+    settings = context.user_data["settings"][chain]["buy_settings"]
+    unit = "TON" if chain == "ton" else "SOL"
+    
+    keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+    
+    # Buy Presets
+    keyboard.append([InlineKeyboardButton(f"Buy Presets ({unit}):", callback_data="noop")])
+    for i, preset in enumerate(settings["presets"]):
+        keyboard.append([
+            InlineKeyboardButton(f"{preset} {unit} ✏️", callback_data=f"edit_buy_preset_{i}")
+        ])
+    
+    # Buy Slippage
+    keyboard.append([
+        InlineKeyboardButton(f"Slippage: {settings['slippage']}% ✏️", callback_data="edit_buy_slippage")
+    ])
+    
+    keyboard.append([InlineKeyboardButton("Back", callback_data="settings_back")])
+    
+    if query:
+        await query.edit_message_text(
+            f"⚙️ Adjust your {chain.upper()} buy settings:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return None
+    else:
+        return InlineKeyboardMarkup(keyboard)
 
-async def show_gas_fee_menu(query, chain: str) -> None:
-    """Show gas fee options."""
-    keyboard = [
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
-        [InlineKeyboardButton("Low", callback_data="gas_low"),
-         InlineKeyboardButton("Medium", callback_data="gas_medium"),
-         InlineKeyboardButton("High", callback_data="gas_high")],
-        [InlineKeyboardButton("Back", callback_data="settings_back")]
-    ]
-    await query.edit_message_text(
-        f"Select gas fee preference for {chain.upper()}:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def show_wallet_format_menu(query, chain: str) -> None:
-    """Show wallet format options."""
-    keyboard = [
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
-        [InlineKeyboardButton("User Friendly", callback_data="wallet_user_friendly"),
-         InlineKeyboardButton("Raw", callback_data="wallet_raw")],
-        [InlineKeyboardButton("Back", callback_data="settings_back")]
-    ]
-    await query.edit_message_text(
-        f"Select wallet address format for {chain.upper()}:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def show_currency_menu(query, chain: str) -> None:
-    """Show currency options."""
-    keyboard = [
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
-        [InlineKeyboardButton("USD", callback_data="currency_USD"),
-         InlineKeyboardButton("EUR", callback_data="currency_EUR")],
-        [InlineKeyboardButton("Back", callback_data="settings_back")]
-    ]
-    await query.edit_message_text(
-        f"Select fiat currency for {chain.upper()}:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
+async def show_sell_settings_menu(query, context: ContextTypes.DEFAULT_TYPE, chain: str) -> None:
+    """Show sell settings menu with percentages and single slippage in single buttons."""
+    settings = context.user_data["settings"][chain]["sell_settings"]
+    
+    keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+    
+    # Sell Percentages
+    keyboard.append([InlineKeyboardButton(f"Sell Percentages:", callback_data="noop")])
+    for i, percent in enumerate(settings["percentages"]):
+        keyboard.append([
+            InlineKeyboardButton(f"{percent}% ✏️", callback_data=f"edit_sell_percent_{i}")
+        ])
+    
+    # Sell Slippage
+    keyboard.append([
+        InlineKeyboardButton(f"Slippage: {settings['slippage']}% ✏️", callback_data="edit_sell_slippage")
+    ])
+    
+    keyboard.append([InlineKeyboardButton("Back", callback_data="settings_back")])
+    
+    if query:
+        await query.edit_message_text(
+            f"⚙️ Adjust your {chain.upper()} sell settings:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return None
+    else:
+        return InlineKeyboardMarkup(keyboard)
 
 # Export handlers
 settings_command_handler = CommandHandler("settings", settings_handler)
 settings_callback_handler = CallbackQueryHandler(
     settings_callback,
-    pattern=r"^(set_|chain_|gas_|toggle_notifications|wallet_|currency_|settings_|main_menu)"
+    pattern=r"^(set_|chain_|edit_buy_|edit_sell_|settings_|main_menu)"
 )
-settings_input_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: None)
-
+settings_input_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
