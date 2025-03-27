@@ -247,7 +247,7 @@ def main() -> None:
         app.add_handler(buy_conv_handler)
         app.add_handler(sell_conv_handler)
         app.add_handler(watchlist_handler)
-        # Single text message handler
+        # Single text message handler more robust handler coming
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
         app.add_handler(help_command_handler)
         app.add_handler(help_callback_handler)
